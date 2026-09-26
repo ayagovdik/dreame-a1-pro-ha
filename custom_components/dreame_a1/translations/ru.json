@@ -80,7 +80,8 @@
           "charging": "Зарядка",
           "mapping": "Картирование",
           "charging_complete": "Зарядка завершена",
-          "updating": "Обновление"
+          "updating": "Обновление",
+          "remote_control": "Дистанционное управление"
         }
       },
       "charging_status": {
@@ -151,6 +152,30 @@
       },
       "refresh_map": {
         "name": "Обновить карту"
+      },
+      "find": {
+        "name": "Найти робота"
+      },
+      "mow_selected_zone": {
+        "name": "Косить выбранную зону"
+      },
+      "remote_start": {
+        "name": "Ручное управление"
+      },
+      "remote_forward": {
+        "name": "Вперёд"
+      },
+      "remote_back": {
+        "name": "Назад"
+      },
+      "remote_left": {
+        "name": "Влево"
+      },
+      "remote_right": {
+        "name": "Вправо"
+      },
+      "remote_stop": {
+        "name": "Стоп"
       }
     }
   }

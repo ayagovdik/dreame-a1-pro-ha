@@ -22,6 +22,19 @@ _RESET_BUTTONS = [
     ("robot", "mdi:robot", "reset_robot_maintenance"),
 ]
 
+# (unique_key, icon, translation_key, action)
+_REMOTE_BUTTONS = [
+    ("remote_start", "mdi:gamepad-variant", "remote_start", "start"),
+    ("remote_forward", "mdi:arrow-up-bold", "remote_forward", "forward"),
+    ("remote_left", "mdi:arrow-left-bold", "remote_left", "left"),
+    ("remote_stop", "mdi:stop", "remote_stop", "stop"),
+    ("remote_right", "mdi:arrow-right-bold", "remote_right", "right"),
+    ("remote_back", "mdi:arrow-down-bold", "remote_back", "back"),
+]
+
+REMOTE_STEP_VELOCITY = 80
+REMOTE_STEP_ROTATION = 90
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -36,6 +49,12 @@ async def async_setup_entry(
     ]
     entities.append(DreameMowerRefreshMapButton(coordinator))
     entities.append(DreameMowerDockWithoutStoppingButton(coordinator))
+    entities.append(DreameMowerFindButton(coordinator))
+    entities.append(DreameMowerMowSelectedZoneButton(coordinator))
+    entities.extend(
+        DreameMowerRemoteButton(coordinator, key, icon, translation_key, action)
+        for key, icon, translation_key, action in _REMOTE_BUTTONS
+    )
     async_add_entities(entities)
 
 
@@ -103,3 +122,68 @@ class DreameMowerDockWithoutStoppingButton(DreameMowerEntity, ButtonEntity):
         """Send mower to dock without stopping the current task."""
         if not await self.coordinator.device.dock_without_stopping():
             _LOGGER.error("Failed to send mower to dock without stopping")
+
+
+class DreameMowerFindButton(DreameMowerEntity, ButtonEntity):
+    """Make the mower beep."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        super().__init__(coordinator, "find")
+        self._attr_icon = "mdi:bullhorn"
+        self._attr_translation_key = "find"
+
+    async def async_press(self) -> None:
+        if not await self.coordinator.device.find_mower():
+            _LOGGER.error("Failed to find mower")
+
+
+class DreameMowerMowSelectedZoneButton(DreameMowerEntity, ButtonEntity):
+    """Start mowing the zone currently selected in the Zone dropdown."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        super().__init__(coordinator, "mow_selected_zone")
+        self._attr_icon = "mdi:mower"
+        self._attr_translation_key = "mow_selected_zone"
+
+    async def async_press(self) -> None:
+        zone_id = self.coordinator.selected_zone_id
+        if zone_id is None:
+            _LOGGER.error("No zone selected")
+            return
+        if not await self.coordinator.device.start_mowing_zones([zone_id]):
+            _LOGGER.error("Failed to start zone mowing for zone %s", zone_id)
+
+
+class DreameMowerRemoteButton(DreameMowerEntity, ButtonEntity):
+    """One joystick step or enter/leave remote-control mode."""
+
+    def __init__(
+        self,
+        coordinator: DreameMowerCoordinator,
+        key: str,
+        icon: str,
+        translation_key: str,
+        action: str,
+    ) -> None:
+        super().__init__(coordinator, key)
+        self._action = action
+        self._attr_icon = icon
+        self._attr_translation_key = translation_key
+
+    async def async_press(self) -> None:
+        device = self.coordinator.device
+        ok = False
+        if self._action == "start":
+            ok = await device.start_remote_control()
+        elif self._action == "stop":
+            ok = await device.stop_remote_control()
+        elif self._action == "forward":
+            ok = await device.remote_move(REMOTE_STEP_VELOCITY, 0)
+        elif self._action == "back":
+            ok = await device.remote_move(-REMOTE_STEP_VELOCITY, 0)
+        elif self._action == "left":
+            ok = await device.remote_move(0, -REMOTE_STEP_ROTATION)
+        elif self._action == "right":
+            ok = await device.remote_move(0, REMOTE_STEP_ROTATION)
+        if not ok:
+            _LOGGER.error("Remote-control action %s failed", self._action)

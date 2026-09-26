@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable, Sequence
 from enum import Enum
+import json
 import logging
 import os
+import random
 from typing import Any, Callable
 from datetime import datetime
 
@@ -82,6 +84,7 @@ from .const import (
     ACTION_PAUSE,
     ACTION_STOP,
     ACTION_DOCK,
+    ACTION_START_MANUAL,
     TASK_PAYLOAD_RESUME,
     DEVICE_CODE_PROPERTY,
     PROPERTY_1_1,
@@ -176,6 +179,8 @@ class DreameMowerDevice:
         self._service1_property_50: bool = False
         self._service1_property_51: bool = False
         self._service1_completion_flag: bool = False
+        self._remote_control_active = False
+        self._rc_move_channel: str | None = None
         
         # Property handlers
         self._misc_handler = MiscPropertyHandler()
@@ -1155,6 +1160,15 @@ class DreameMowerDevice:
 
         return map_id - 1
 
+    def _task_map_index(self) -> int:
+        """Return the active mapIndex for 2:50 payloads (A1 Pro is often not 0)."""
+        map_id = self.current_map_id
+        if map_id is not None:
+            return int(self._map_index_from_id(map_id))
+        if self._vector_map is not None:
+            return int(getattr(self._vector_map, "map_index", 0) or 0)
+        return 0
+
     def _map_id_from_index(self, map_index: int, fallback_position: int | None = None) -> int | None:
         """Translate a device map index back to the exposed map identifier."""
         if self._vector_map is not None:
@@ -1386,7 +1400,7 @@ class DreameMowerDevice:
         """Build the 2:50 action payload for map-aware all-area mowing."""
         return {
             "m": "a",
-            "p": 0,
+            "p": self._task_map_index(),
             "o": 100,
             "d": {
                 "region_id": [map_id],
@@ -1398,7 +1412,7 @@ class DreameMowerDevice:
         """Build the 2:50 action payload for switching the active map."""
         return {
             "m": "a",
-            "p": 0,
+            "p": map_index,
             "o": 200,
             "d": {
                 "idx": map_index,
@@ -1427,7 +1441,7 @@ class DreameMowerDevice:
         """Build the 2:50 action payload for a zone-selective mowing session."""
         return {
             "m": "a",
-            "p": 0,
+            "p": self._task_map_index(),
             "o": 102,
             "d": {
                 "region": zone_ids,
@@ -1456,7 +1470,7 @@ class DreameMowerDevice:
         """Build the verified 2:50 action payload for spot mowing."""
         return {
             "m": "a",
-            "p": 0,
+            "p": self._task_map_index(),
             "o": 103,
             "d": {
                 "area": spot_area_ids,
@@ -1473,7 +1487,7 @@ class DreameMowerDevice:
         """Build the 2:50 action payload for defining a rectangular spot area."""
         return {
             "m": "a",
-            "p": 0,
+            "p": self._task_map_index(),
             "o": 214,
             "d": {
                 "id": -1,
@@ -1749,7 +1763,7 @@ class DreameMowerDevice:
         """Build the 2:50 action payload for an edge-mowing session."""
         return {
             "m": "a",
-            "p": 0,
+            "p": self._task_map_index(),
             "o": 101,
             "d": {
                 "edge": contour_ids,
@@ -1961,8 +1975,7 @@ class DreameMowerDevice:
             )
 
         if mode == MowingMode.MANUAL:
-            _LOGGER.error("Manual mowing is not implemented yet; it appears to require Bluetooth")
-            return False
+            return await self.start_remote_control()
 
         _LOGGER.error("Unsupported mowing mode requested: %s", mode)
         return False
@@ -2095,6 +2108,151 @@ class DreameMowerDevice:
        
         self._notify_property_change("activity", "docked")
         return True
+
+    def _rc_move_payload(self, velocity: int, rotation: int) -> str:
+        """JSON used by Dreame vacuum-style remote control steps."""
+        return json.dumps(
+            {
+                "spdv": int(velocity),
+                "spdw": int(rotation),
+                "audio": "false",
+                "random": random.randrange(65535),
+            },
+            separators=(",", ":"),
+        )
+
+    def _try_rc_channel(self, channel: str, velocity: int, rotation: int) -> bool:
+        """Try one cloud channel for a joystick step. Remember the first that works."""
+        payload = self._rc_move_payload(velocity, rotation)
+        map_index = self._task_map_index()
+
+        def _call() -> Any:
+            if channel == "property_4_15":
+                return self._cloud_device.set_property(4, 15, payload)
+            if channel == "cfg_rc":
+                return self._cloud_device.action(
+                    2,
+                    50,
+                    [{"m": "s", "t": "RC", "d": {"spdv": velocity, "spdw": rotation}}],
+                )
+            if channel == "opcode_23":
+                return self._cloud_device.action(
+                    2,
+                    50,
+                    [
+                        {
+                            "m": "a",
+                            "p": map_index,
+                            "o": 23,
+                            "d": {"spdv": velocity, "spdw": rotation},
+                        }
+                    ],
+                )
+            if channel == "action_5_7":
+                return self._cloud_device.action(
+                    5,
+                    7,
+                    [{"piid": 1, "value": payload}],
+                )
+            raise ValueError(channel)
+
+        try:
+            result = _call()
+            _LOGGER.info("Remote-control channel %s accepted move v=%s w=%s: %s", channel, velocity, rotation, result)
+            self._rc_move_channel = channel
+            self._remote_control_active = True
+            return True
+        except Exception as ex:
+            _LOGGER.warning("Remote-control channel %s failed: %s", channel, ex)
+            return False
+
+    async def start_remote_control(self) -> bool:
+        """Enter manual / remote-control mode over the Dreame cloud."""
+        started = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._cloud_device.execute_action(ACTION_START_MANUAL)
+        )
+        if not started:
+            try:
+                await self._send_task_payload(
+                    "start remote control",
+                    {"m": "a", "p": self._task_map_index(), "o": 23, "d": {}},
+                )
+                started = True
+            except Exception as ex:
+                _LOGGER.error("Failed to enter remote-control mode: %s", ex)
+                return False
+
+        self._remote_control_active = True
+        self._notify_property_change("activity", "remote_control")
+        _LOGGER.info("Remote-control mode requested for device %s", self._device_id)
+        return True
+
+    async def stop_remote_control(self) -> bool:
+        """Stop joystick motion and leave remote-control mode."""
+        await self.remote_move(0, 0)
+        stopped = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._cloud_device.execute_action(ACTION_STOP)
+        )
+        self._remote_control_active = False
+        if not stopped:
+            _LOGGER.error("Failed to leave remote-control mode")
+            return False
+        self._notify_property_change("activity", "paused")
+        return True
+
+    async def remote_move(self, velocity: int, rotation: int) -> bool:
+        """Send one joystick step: velocity forward/back, rotation left/right.
+
+        Official Dreamehome often gates the stick behind Bluetooth. The same
+        cloud/MQTT channels are tried here so the mower can be nudged from HA
+        in the city if the device accepts them.
+        """
+        velocity = max(-300, min(100, int(velocity)))
+        rotation = max(-128, min(128, int(rotation)))
+
+        if not self._remote_control_active and (velocity or rotation):
+            await self.start_remote_control()
+
+        channels = []
+        if self._rc_move_channel:
+            channels.append(self._rc_move_channel)
+        for channel in ("property_4_15", "cfg_rc", "opcode_23", "action_5_7"):
+            if channel not in channels:
+                channels.append(channel)
+
+        loop = asyncio.get_event_loop()
+        for channel in channels:
+            ok = await loop.run_in_executor(
+                None, lambda ch=channel: self._try_rc_channel(ch, velocity, rotation)
+            )
+            if ok:
+                return True
+
+        _LOGGER.error(
+            "All remote-control cloud channels failed for v=%s w=%s — device may require Bluetooth",
+            velocity,
+            rotation,
+        )
+        return False
+
+    async def find_mower(self) -> bool:
+        """Make the mower beep so it is easier to locate."""
+        try:
+            result = await self._send_task_payload(
+                "find mower",
+                {"m": "a", "p": self._task_map_index(), "o": 9, "d": {}},
+            )
+        except Exception as ex:
+            _LOGGER.error("Find-mower command failed: %s", ex)
+            return False
+        if not result:
+            _LOGGER.error("Find-mower command returned falsy result: %s", result)
+            return False
+        return True
+
+    async def start_selected_zone_mowing(self, zone_id: int) -> bool:
+        """Start mowing a single zone by ID."""
+        return await self.start_mowing_zones([zone_id])
 
 
 class DreameSwbotDevice(DreameMowerDevice):

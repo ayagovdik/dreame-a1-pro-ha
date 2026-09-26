@@ -102,6 +102,7 @@ ACTION_START_MOWING = ActionIdentifier(siid=5, aiid=1, name="start_mowing")
 ACTION_STOP = ActionIdentifier(siid=5, aiid=2, name="stop")
 ACTION_DOCK = ActionIdentifier(siid=5, aiid=3, name="dock")
 ACTION_PAUSE = ActionIdentifier(siid=5, aiid=4, name="pause")
+ACTION_START_MANUAL = ActionIdentifier(siid=5, aiid=7, name="start_manual_mowing")
 
 # Embedded protocol task payloads (sent via SCHEDULING_TASK_PROPERTY 2:50)
 # Format: {m: 'a', p: <priority>, o: <opcode>, d?: <data>}
@@ -130,6 +131,7 @@ class DeviceStatus(IntEnum):
     MAPPING = 11
     CHARGING_COMPLETE = 13
     UPDATING = 14
+    REMOTE_CONTROL = 23
 
 
 STATUS_MAPPING: dict[int, str] = {
@@ -142,7 +144,8 @@ STATUS_MAPPING: dict[int, str] = {
     DeviceStatus.CHARGING: "charging",
     DeviceStatus.MAPPING: "mapping",
     DeviceStatus.CHARGING_COMPLETE: "charging_complete",
-    DeviceStatus.UPDATING: "updating"
+    DeviceStatus.UPDATING: "updating",
+    DeviceStatus.REMOTE_CONTROL: "remote_control",
 }
 
 def map_status_to_activity(status: int) -> LawnMowerActivity:
@@ -151,7 +154,7 @@ def map_status_to_activity(status: int) -> LawnMowerActivity:
     Keep mapping logic colocated with STATUS_MAPPING so behaviour is consistent
     across the integration.
     """
-    if status in [DeviceStatus.MOWING]:
+    if status in [DeviceStatus.MOWING, DeviceStatus.REMOTE_CONTROL]:
         return LawnMowerActivity.MOWING
     elif status in [DeviceStatus.STANDBY, DeviceStatus.PAUSED]:
         return LawnMowerActivity.PAUSED

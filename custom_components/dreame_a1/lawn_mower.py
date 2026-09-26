@@ -51,6 +51,14 @@ async def async_setup_entry(
         {vol.Required("spot_area_ids"): [vol.Coerce(int)]},
         "async_start_spot_mowing",
     )
+    platform.async_register_entity_service(
+        "remote_move",
+        {
+            vol.Required("velocity"): vol.All(vol.Coerce(int), vol.Range(min=-300, max=100)),
+            vol.Required("rotation"): vol.All(vol.Coerce(int), vol.Range(min=-128, max=128)),
+        },
+        "async_remote_move",
+    )
 
     entity = DreameMowerLawnMower(coordinator)
     async_add_entities([entity])
@@ -148,6 +156,13 @@ class DreameMowerLawnMower(DreameMowerEntity, LawnMowerEntity):
         """Start mowing for one or more explicit spot-area IDs."""
         if not await self.coordinator.device.start_mowing_spots(spot_area_ids):
             raise HomeAssistantError(f"Failed to start spot mowing for spot IDs: {spot_area_ids}")
+
+    async def async_remote_move(self, velocity: int, rotation: int) -> None:
+        """Send one remote-control joystick step."""
+        if not await self.coordinator.device.remote_move(velocity, rotation):
+            raise HomeAssistantError(
+                "Remote move failed. The A1 Pro app often requires Bluetooth; check HA logs for which cloud channel was tried."
+            )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

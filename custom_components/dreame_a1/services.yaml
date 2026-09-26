@@ -25,3 +25,32 @@ start_spot_mowing:
       description: List of spot area IDs to mow, for example [2, 4].
       required: true
       example: [2, 4]
+
+remote_move:
+  name: Remote move
+  description: One joystick step over the Dreame cloud (forward/back/turn).
+  target:
+    entity:
+      integration: dreame_a1
+      domain: lawn_mower
+  fields:
+    velocity:
+      name: Velocity
+      description: Forward positive, backward negative. Range -300 to 100.
+      required: true
+      example: 80
+      selector:
+        number:
+          min: -300
+          max: 100
+          mode: box
+    rotation:
+      name: Rotation
+      description: Left negative, right positive. Range -128 to 128.
+      required: true
+      example: 0
+      selector:
+        number:
+          min: -128
+          max: 128
+          mode: box

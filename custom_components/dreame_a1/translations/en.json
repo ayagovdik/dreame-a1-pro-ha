@@ -80,7 +80,8 @@
           "charging": "Charging",
           "mapping": "Mapping",
           "charging_complete": "Charging complete",
-          "updating": "Updating"
+          "updating": "Updating",
+          "remote_control": "Remote control"
         }
       },
       "charging_status": {
@@ -146,6 +147,30 @@
       },
       "refresh_map": {
         "name": "Refresh map"
+      },
+      "find": {
+        "name": "Find robot"
+      },
+      "mow_selected_zone": {
+        "name": "Mow selected zone"
+      },
+      "remote_start": {
+        "name": "Remote control"
+      },
+      "remote_forward": {
+        "name": "Forward"
+      },
+      "remote_back": {
+        "name": "Back"
+      },
+      "remote_left": {
+        "name": "Left"
+      },
+      "remote_right": {
+        "name": "Right"
+      },
+      "remote_stop": {
+        "name": "Stop remote"
       }
     },
     "camera": {
