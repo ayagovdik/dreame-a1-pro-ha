@@ -1,0 +1,396 @@
+"""Minimal sensor platform for Dreame Mower Implementation."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfArea
+
+from .const import DATA_COORDINATOR, DOMAIN
+from .coordinator import DreameMowerCoordinator
+from .dreame.const import DeviceStatus
+from .entity import DreameMowerEntity
+from .config_flow import DEVICE_TYPE_SWBOT
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Dreame Mower sensors from config entry."""
+    coordinator: DreameMowerCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
+    
+    if coordinator.device_type == DEVICE_TYPE_SWBOT:
+        sensors = [
+            DreameMowerBatterySensor(coordinator),
+            DreameMowerStatusSensor(coordinator),
+        ]
+    else:
+        # Full mower sensor set
+        sensors = [
+            DreameMowerBatterySensor(coordinator),
+            DreameMowerStatusSensor(coordinator),
+            DreameMowerCurrentZoneSensor(coordinator),
+            DreameMowerCurrentMapSensor(coordinator),
+            DreameMowerChargingStatusSensor(coordinator),
+            DreameMowerBluetoothSensor(coordinator),
+            DreameMowerDeviceCodeSensor(coordinator),
+            DreameMowerTaskSensor(coordinator),
+            DreameMowerProgressSensor(coordinator),
+            DreameMowerConsumableHealthSensor(coordinator, "blade", 0, 6000, "mdi:scissors-cutting"),
+            DreameMowerConsumableHealthSensor(coordinator, "brush", 1, 30000, "mdi:brush"),
+            DreameMowerConsumableHealthSensor(coordinator, "robot", 2, 3600, "mdi:robot"),
+        ]
+    
+    async_add_entities(sensors)
+
+
+class DreameMowerBatterySensor(DreameMowerEntity, SensorEntity):
+    """Battery level sensor for Dreame Mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the battery sensor."""
+        super().__init__(coordinator, "battery")
+        self._attr_device_class = SensorDeviceClass.BATTERY
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = "mdi:battery"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the battery level."""
+        return self.coordinator.device_battery_percent
+
+
+class DreameMowerStatusSensor(DreameMowerEntity, SensorEntity):
+    """Status sensor for Dreame Mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the status sensor."""
+        super().__init__(coordinator, "status")
+        self._attr_icon = "mdi:robot-mower"
+        self._attr_translation_key = "status"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the mower status."""
+        if not self.available:
+            return "offline"
+        return self.coordinator.device_status
+
+
+_ZONE_STATUS_LABELS = {
+    -1: "queued",
+    0: "mowing",
+    2: "done",
+    4: "paused",
+}
+
+
+class DreameMowerCurrentZoneSensor(DreameMowerEntity, SensorEntity):
+    """Shows which mowing zone is active right now."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        super().__init__(coordinator, "current_zone")
+        self._attr_icon = "mdi:map-marker-radius"
+        self._attr_translation_key = "current_zone"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.available:
+            return None
+        zone_name = self.coordinator.active_mowing_zone_name
+        if zone_name:
+            return zone_name
+        queued = self.coordinator.queued_mowing_zone_ids
+        if queued:
+            return self.coordinator.device.zone_name_for_id(queued[0])
+        return "none"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        zone_id = self.coordinator.active_mowing_zone_id
+        entries = self.coordinator.mower_zone_entries
+        zones_detail = [
+            {
+                "zone_id": entry[0],
+                "zone_name": self.coordinator.device.zone_name_for_id(int(entry[0])),
+                "status": _ZONE_STATUS_LABELS.get(entry[1], str(entry[1])),
+                "status_code": entry[1],
+            }
+            for entry in entries
+        ]
+        return {
+            "active_zone_id": zone_id,
+            "active_zone_name": self.coordinator.active_mowing_zone_name,
+            "queued_zone_ids": self.coordinator.queued_mowing_zone_ids,
+            "zone_session": zones_detail,
+        }
+
+
+class DreameMowerCurrentMapSensor(DreameMowerEntity, SensorEntity):
+    """Shows the map currently selected on the mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        super().__init__(coordinator, "current_map")
+        self._attr_icon = "mdi:map"
+        self._attr_translation_key = "current_map"
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.available:
+            return None
+        return self.coordinator.current_map_name or "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "map_id": self.coordinator.current_map_id,
+            "available_maps": self.coordinator.available_maps,
+            "task_target_map_id": self.coordinator.task_target_map_id,
+        }
+
+
+class DreameMowerChargingStatusSensor(DreameMowerEntity, SensorEntity):
+    """Charging status sensor for Dreame Mower (3:2)."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the charging status sensor."""
+        super().__init__(coordinator, "charging_status")
+        self._attr_icon = "mdi:lightning-bolt"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_translation_key = "charging_status"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the charging status mapped text."""
+        return self.coordinator.device_charging_status
+
+
+class DreameMowerBluetoothSensor(DreameMowerEntity, SensorEntity):
+    """Bluetooth connection sensor for Dreame Mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the Bluetooth sensor."""
+        super().__init__(coordinator, "bluetooth_connection")
+        self._attr_icon = "mdi:bluetooth"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_translation_key = "bluetooth_connection"
+
+    @property
+    def native_value(self) -> bool | None:
+        """Return the Bluetooth connection status."""
+        return self.coordinator.device_bluetooth_connected
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        return {
+            "bluetooth_connected": self.coordinator.device_bluetooth_connected,
+        }
+
+
+class DreameMowerDeviceCodeSensor(DreameMowerEntity, SensorEntity):
+    """Device code sensor (2:2) - shows current device status/error codes."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the device code sensor."""
+        super().__init__(coordinator, "device_code")
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_translation_key = "device_code"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the current device code."""
+        return self.coordinator.device_code
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on device code type."""
+        if self.coordinator.device_code_is_error:
+            return "mdi:alert-circle"
+        elif self.coordinator.device_code_is_warning:
+            return "mdi:alert"
+        else:
+            return "mdi:information-outline"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        attributes: dict[str, Any] = {}
+        
+        # Add device code details
+        if self.coordinator.device_code is not None:
+            attributes["code"] = self.coordinator.device_code
+            attributes["name"] = self.coordinator.device_code_name
+            attributes["description"] = self.coordinator.device_code_description
+            
+            # Determine type based on priority: error > warning > info
+            if self.coordinator.device_code_is_error:
+                attributes["type"] = "error"
+            elif self.coordinator.device_code_is_warning:
+                attributes["type"] = "warning"
+            else:
+                attributes["type"] = "info"
+        
+        return attributes
+
+
+class DreameMowerTaskSensor(DreameMowerEntity, SensorEntity):
+    """Current task sensor for Dreame Mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the task sensor."""
+        super().__init__(coordinator, "current_task")
+        self._attr_icon = "mdi:clipboard-play"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_translation_key = "current_task"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the current task status."""
+        task_data = self.coordinator.current_task_data
+        if not task_data:
+            return None
+        
+        execution_active = task_data.get("execution_active", False)
+        task_active = task_data.get("task_active", False)
+        
+        if task_active and execution_active:
+            # Cross-reference with device status: if mower is returning/charging
+            # during an active task, it's recharging mid-task (not actively mowing)
+            if self.coordinator.device_status_code in (DeviceStatus.RETURNING_TO_CHARGE, DeviceStatus.CHARGING, DeviceStatus.CHARGING_COMPLETE):
+                return "Recharging"
+            return "Active"
+        elif task_active and not execution_active:
+            return "Paused"
+        else:
+            return "Inactive"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes with detailed task information."""
+        attributes: dict[str, Any] = {}
+        
+        task_data = self.coordinator.current_task_data
+        if task_data:
+            attributes.update({
+                "task_type": task_data.get("type"),
+                "execution_active": task_data.get("execution_active"),
+                "task_active": task_data.get("task_active"),
+                "coverage_target": task_data.get("coverage_target"),
+                "area_id": task_data.get("area_id"),
+                "region_id": task_data.get("region_id"),
+                "elapsed_time": task_data.get("elapsed_time"),
+            })
+        
+        return attributes
+
+
+class DreameMowerProgressSensor(DreameMowerEntity, SensorEntity):
+    """Mowing progress sensor for Dreame Mower."""
+
+    def __init__(self, coordinator: DreameMowerCoordinator) -> None:
+        """Initialize the progress sensor."""
+        super().__init__(coordinator, "mowing_progress")
+        self._attr_device_class = SensorDeviceClass.POWER_FACTOR
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = "mdi:percent"
+        self._attr_translation_key = "mowing_progress"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the mowing progress percentage."""
+        progress = self.coordinator.mowing_progress_percent
+        if progress is not None:
+            return round(progress, 1)
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        progress = self.coordinator.mowing_progress_percent
+        attributes: dict[str, Any] = {
+            "current_area_sqm": self.coordinator.current_area_sqm,
+            "total_area_sqm": self.coordinator.total_area_sqm,
+            "progress_percent": round(progress, 1) if progress is not None else None,
+        }
+        
+        # Add mower coordinates data
+        coordinates = self.coordinator.mower_coordinates
+        if coordinates:
+            attributes["coordinates"] = f"{coordinates[0]}, {coordinates[1]}"
+            attributes["x"] = coordinates[0]
+            attributes["y"] = coordinates[1]
+        else:
+            attributes["coordinates"] = None
+            attributes["x"] = None
+            attributes["y"] = None
+            
+        attributes["segment"] = self.coordinator.current_segment
+        attributes["heading"] = self.coordinator.mower_heading
+        
+        # Add path history summary
+        path_history = self.coordinator.mowing_path_history
+        attributes["path_points"] = len(path_history)
+        
+        return attributes
+
+
+_CONSUMABLE_ITEM_INDEX = {"blade": 0, "brush": 1, "robot": 2}
+
+
+class DreameMowerConsumableHealthSensor(DreameMowerEntity, SensorEntity):
+    """Remaining-life health sensor for one CMS consumable item."""
+
+    def __init__(
+        self,
+        coordinator: DreameMowerCoordinator,
+        item: str,
+        index: int,
+        total_minutes: int,
+        icon: str,
+    ) -> None:
+        super().__init__(coordinator, f"consumable_{item}_health")
+        self._item = item
+        self._index = index
+        self._total_minutes = total_minutes
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = icon
+        self._attr_translation_key = f"consumable_{item}_health"
+
+    def _used_minutes(self) -> int | None:
+        values = self.coordinator.consumable_values
+        if values is None or len(values) <= self._index:
+            return None
+        return max(0, min(int(values[self._index]), self._total_minutes))
+
+    @property
+    def native_value(self) -> float | None:
+        used = self._used_minutes()
+        if used is None:
+            return None
+        remaining = self._total_minutes - used
+        return round((remaining / self._total_minutes) * 100, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        used = self._used_minutes()
+        if used is None:
+            return {}
+        remaining = self._total_minutes - used
+        return {
+            "used_hours": round(used / 60, 1),
+            "remaining_hours": round(remaining / 60, 1),
+            "total_hours": round(self._total_minutes / 60, 1),
+        }

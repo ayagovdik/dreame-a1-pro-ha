@@ -1,0 +1,11 @@
+{
+  "domain": "dreame_a1",
+  "name": "Dreame A1 Pro Lawn Mower",
+  "codeowners": ["@ayagovdik"],
+  "config_flow": true,
+  "documentation": "https://github.com/ayagovdik/dreame-a1-pro-ha",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ayagovdik/dreame-a1-pro-ha/issues",
+  "requirements": ["requests", "paho-mqtt>=2.0.0"],
+  "version": "0.2.0"
+}
